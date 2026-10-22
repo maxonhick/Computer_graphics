@@ -7,7 +7,10 @@
 #include <thread>
 #include <queue>
 
-int gridMap[1280][720] = {0};
+const int WIDTH = 1280;
+const int HEIGHT = 800;
+
+int gridMap[WIDTH][HEIGHT] = {0};
 
 struct Vector {
     int x;
@@ -15,14 +18,56 @@ struct Vector {
 };
 
 struct Point {
-    int x, y;
+    double x, y;
 };
+
+void squareKochIsland(std::vector<Point>& poly) {
+    std::vector<Point> newPoly;
+    newPoly.reserve(poly.size() * 8);
+    for (size_t i = 0; i < poly.size(); ++i) {
+        Point p0 = poly[i];
+        Point p8 = poly[(i + 1) % poly.size()];
+
+        newPoly.push_back(p0);
+
+        double dx = (p8.x - p0.x) / 4;
+        double dy = (p8.y - p0.y) / 4;
+
+        double nx = - dy;
+        double ny = dx;
+
+        newPoly.push_back({p0.x + dx, p0.y + dy});
+
+        // P2: выступ наружу
+        newPoly.push_back({p0.x + dx + nx, p0.y + dy + ny});
+
+        // P3: шаг вперед по выступу
+        newPoly.push_back({p0.x + 2 * dx + nx, p0.y + 2 * dy + ny});
+
+        // P4: возврат на осевую линию
+        newPoly.push_back({p0.x + 2 * dx, p0.y + 2 * dy});
+
+        // P5: шаг внутрь (впадина)
+        newPoly.push_back({p0.x + 2 * dx - nx, p0.y + 2 * dy - ny});
+
+        // P6: шаг вперед по дну впадины
+        newPoly.push_back({p0.x + 3 * dx - nx, p0.y + 3 * dy - ny});
+
+        // P7: возврат на осевую линию
+        newPoly.push_back({p0.x + 3 * dx, p0.y + 3 * dy});
+    }
+    poly = std::move(newPoly);
+}
 
 // Функция для добавления пикселя в массив
 void putPixel(sf::VertexArray& canvas, float x, float y, sf::Color color = sf::Color::White) {
-    canvas.append(sf::Vertex{{x, y}, color});
-    if (x >= 0 && x < 1280 && y >= 0 && y < 720) {
-        gridMap[(int)x][(int)y] = 1;
+    int ix = (int)x;
+    int iy = (int)y;
+    if (ix >= 0 && ix < WIDTH && iy >= 0 && iy < HEIGHT) {
+        if (gridMap[ix][iy] == 0) { // Не добавлять повторно тысячи одинаковых вершин
+            gridMap[ix][iy] = 1;
+            canvas.append(sf::Vertex{{(float)ix, (float)iy}, color});
+        }
     }
 }
 
@@ -72,10 +117,10 @@ size_t floodFill(sf::VertexArray& canvas, Point start, sf::Color fillColor = sf:
         Point p = q.front();
         q.pop();
 
-        if (p.x < 0 || p.x >= 1280 || p.y < 0 || p.y >= 720) continue;
+        if (p.x < 0 || p.x >= WIDTH || p.y < 0 || p.y >= HEIGHT) continue;
 
-        if (gridMap[p.x][p.y] == 0) {
-            gridMap[p.x][p.y] = 2;
+        if (gridMap[(int)p.x][(int)p.y] == 0) {
+            gridMap[(int)p.x][(int)p.y] = 2;
             canvas.append(sf::Vertex{{(float)p.x, (float)p.y}, fillColor});
             q.push({p.x + 1, p.y});
             q.push({p.x - 1, p.y});
@@ -98,8 +143,8 @@ size_t scanlineFill(sf::VertexArray& canvas, const std::vector<Point>& poly, sf:
     int minY = poly[0].y;
     int maxY = poly[0].y;
     for (const auto& p : poly) {
-        minY = std::min(minY, p.y);
-        maxY = std::max(maxY, p.y);
+        minY = std::min(minY, (int)p.y);
+        maxY = std::max(maxY, (int)p.y);
     }
 
     // Таблица ребер (Edge Table), сгруппированная по yMin
@@ -148,7 +193,7 @@ size_t scanlineFill(sf::VertexArray& canvas, const std::vector<Point>& poly, sf:
             int xEnd = static_cast<int>(std::floor(activeEdgeList[i + 1].xCurrent));
 
             for (int x = xStart; x <= xEnd; ++x) {
-                if (x >= 0 && x < 1280 && y >= 0 && y < 720) {
+                if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
                     canvas.append(sf::Vertex{sf::Vector2f(static_cast<float>(x), static_cast<float>(y)), fillColor});
                 }
             }
@@ -163,15 +208,15 @@ size_t scanlineFill(sf::VertexArray& canvas, const std::vector<Point>& poly, sf:
     return edgeCount * sizeof(Edge);
 }
 
-int main() {
-    // 1. Задаем фигуру (многоугольник)
-    std::vector<Point> figure = {
-        {600, 300}, {500, 473}, {300, 473}, {200, 300}, {300, 126}, {500, 126}
-    };
-    Point seedPoint = {400, 300};
-
+std::pair<sf::VertexArray, sf::VertexArray> Test(const std::vector<Point>& figure, const Point seedPoint, sf::VertexArray& boundary) {
     // Отрисовка контура фигуры для flood fill
-    sf::VertexArray boundary(sf::PrimitiveType::Points);
+    for (int i = 0; i < WIDTH; ++i) {
+        for (int j = 0; j < HEIGHT; ++j) {
+            gridMap[i][j] = 0;
+        }
+    }
+
+    boundary.clear();
     for (size_t i = 0; i < figure.size(); ++i) {
         Point p1 = figure[i];
         Point p2 = figure[(i + 1) % figure.size()];
@@ -213,10 +258,30 @@ int main() {
     std::cout << "===========================================\n";
     std::cout << "Управление в окне:\n";
     std::cout << "  Клавиша [1] - Показать заливку с затравкой (зеленая)\n";
-    std::cout << "  Клавиша [2] - Показать Scanline заливку (синяя)\n";
+    std::cout << "  Клавиша [2] - Показать Scanline заливку (синяя)\n\n\n\n";
+    return {floodResult, scanlineResult};
+}
+
+int main() {
+    // 1. Задаем фигуру (многоугольник)
+    const double S = 400.0;
+    const double cx = WIDTH / 2.0;
+    const double cy = HEIGHT / 2.0;
+
+    std::vector<Point> figure = {
+        {cx - S / 2.0, cy - S / 2.0}, // (600, 350)
+        {cx + S / 2.0, cy - S / 2.0}, // (1400, 350)
+        {cx + S / 2.0, cy + S / 2.0}, // (1400, 1150)
+        {cx - S / 2.0, cy + S / 2.0}  // (600, 1150)
+    };
+    Point seedPoint = {cx, cy};
+
+    sf::VertexArray boundary(sf::PrimitiveType::Points);
+
+    auto [floodResult, scanlineResult] = Test(figure, seedPoint, boundary);
 
     // 2. Отображение в окне
-    sf::RenderWindow window(sf::VideoMode({1280, 720}), L"Сравнение алгоритмов закрашивания");
+    sf::RenderWindow window(sf::VideoMode({WIDTH, HEIGHT}), L"Сравнение алгоритмов закрашивания");
     int currentMode = 1;
 
     while (window.isOpen()) {
@@ -229,6 +294,13 @@ int main() {
                     currentMode = 1;
                 } else if (keyPressed->code == sf::Keyboard::Key::Num2) {
                     currentMode = 2;
+                } else if (keyPressed->code == sf::Keyboard::Key::Right) {
+                    squareKochIsland(figure);
+                    auto results = Test(figure, seedPoint, boundary);
+                    floodResult = std::move(results.first);
+                    scanlineResult = std::move(results.second);
+                }else if (keyPressed->code == sf::Keyboard::Key::Escape) {
+                    window.close();
                 }
             }
         }
