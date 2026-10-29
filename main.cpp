@@ -1,308 +1,163 @@
 #include <SFML/Graphics.hpp>
-#include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <ctime>
-#include <chrono>
-#include <thread>
-#include <queue>
-#include <tuple>
+#include <cmath>
+#include <filesystem>
+#include <string>
 
-const int WIDTH = 1280;
-const int HEIGHT = 800;
+namespace fs = std::filesystem;
 
-int gridMap[WIDTH][HEIGHT] = {0};
-
-struct Point {
-    double x, y;
-};
-
-void squareKochIsland(std::vector<Point>& poly) {
-    std::vector<Point> newPoly;
-    newPoly.reserve(poly.size() * 8);
-    for (size_t i = 0; i < poly.size(); ++i) {
-        Point p0 = poly[i];
-        Point p8 = poly[(i + 1) % poly.size()];
-
-        newPoly.push_back(p0);
-
-        double dx = (p8.x - p0.x) / 4.0;
-        double dy = (p8.y - p0.y) / 4.0;
-
-        double nx = dy;
-        double ny = -dx;
-
-        newPoly.push_back({p0.x + dx, p0.y + dy});
-
-        // P2: выступ наружу
-        newPoly.push_back({p0.x + dx + nx, p0.y + dy + ny});
-
-        // P3: шаг вперед по выступу
-        newPoly.push_back({p0.x + 2 * dx + nx, p0.y + 2 * dy + ny});
-
-        // P4: возврат на осевую линию
-        newPoly.push_back({p0.x + 2 * dx, p0.y + 2 * dy});
-
-        // P5: шаг внутрь (впадина)
-        newPoly.push_back({p0.x + 2 * dx - nx, p0.y + 2 * dy - ny});
-
-        // P6: шаг вперед по дну впадины
-        newPoly.push_back({p0.x + 3 * dx - nx, p0.y + 3 * dy - ny});
-
-        // P7: возврат на осевую линию
-        newPoly.push_back({p0.x + 3 * dx, p0.y + 3 * dy});
-    }
-    poly = std::move(newPoly);
-}
-
-// Функция для добавления пикселя в массив
-void putPixel(sf::VertexArray& canvas, float x, float y, sf::Color color = sf::Color::White) {
-    int ix = (int)x;
-    int iy = (int)y;
-    if (ix >= 0 && ix < WIDTH && iy >= 0 && iy < HEIGHT) {
-        if (gridMap[ix][iy] == 0) {
-            gridMap[ix][iy] = 1;
-            canvas.append(sf::Vertex{{(float)ix, (float)iy}, color});
-        }
-    }
-}
-
-void addLine(sf::VertexArray& canvas, int x1, int y1, int x2, int y2, sf::Color color = sf::Color::White) {
-    bool steep = std::abs(y2 - y1) > std::abs(x2 - x1);
-    
-    if (steep) {
-        std::swap(x1, y1);
-        std::swap(x2, y2);
-    }
-
-    if (x1 > x2) {
-        std::swap(x1, x2);
-        std::swap(y1, y2);
-    }
-
-    int dx = x2 - x1;
-    int ystep = (y1 < y2) ? 1 : -1;
-    int y = y1;
-    int dy = std::abs(y2 - y1);
-    int d = 0;
-
-    for (int x = x1; x <= x2; ++x) {
-        if (steep) {
-            putPixel(canvas, y, x, color);
-        } else {
-            putPixel(canvas, x, y, color);
-        }
-
-        d += 2 * dy;
-        if (d >= dx) {
-            y += ystep;
-            d -= 2 * dx;
-        }
-    }
-}
-
-
-size_t floodFill(sf::VertexArray& canvas, Point start, sf::Color fillColor = sf::Color(0, 255, 0)) {
-    std::queue<Point> q;
-    q.push(start);
-    size_t maxQueueSize = 0;
-
-    while(!q.empty()) {
-        maxQueueSize = std::max(maxQueueSize, q.size());
-
-        Point p = q.front();
-        q.pop();
-
-        int px = (int)p.x;
-        int py = (int)p.y;
-
-        if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT) continue;
-
-        if (gridMap[px][py] == 0) {
-            gridMap[px][py] = 2;
-            canvas.append(sf::Vertex{{(float)px, (float)py}, fillColor});
-            q.push({(double)px + 1, (double)py});
-            q.push({(double)px - 1, (double)py});
-            q.push({(double)px, (double)py + 1});
-            q.push({(double)px, (double)py - 1});
-        }
-    }
-    return maxQueueSize;
-}
-
-struct Edge {
-    int yMax;
-    float xCurrent;
-    float invSlope;
-};
-
-size_t scanlineFill(sf::VertexArray& canvas, const std::vector<Point>& poly, sf::Color fillColor = sf::Color(0, 255, 0)) {
-    if (poly.size() < 3) return 0;
-
-    int minY = (int)poly[0].y;
-    int maxY = (int)poly[0].y;
-    for (const auto& p : poly) {
-        minY = std::min(minY, (int)p.y);
-        maxY = std::max(maxY, (int)p.y);
-    }
-
-    // Таблица ребер (Edge Table), сгруппированная по yMin
-    std::vector<std::vector<Edge>> edgeTable(maxY - minY + 1);
-    size_t edgeCount = 0;
-
-    size_t n = poly.size();
-    for (size_t i = 0; i < n; ++i) {
-        Point p1 = poly[i];
-        Point p2 = poly[(i + 1) % n];
-
-        if ((int)p1.y == (int)p2.y) continue;
-        if (p1.y > p2.y) std::swap(p1, p2);
-
-        Edge e;
-        e.yMax = (int)p2.y;
-        e.xCurrent = static_cast<float>(p1.x);
-        e.invSlope = static_cast<float>(p2.x - p1.x) / static_cast<float>(p2.y - p1.y);
-
-        edgeTable[(int)p1.y - minY].push_back(e);
-        edgeCount++;
-    }
-
-    std::vector<Edge> activeEdgeList;
-
-    for (int y = minY; y <= maxY; ++y) {
-        // 1. Добавляем новые ребра из Edge Table
-        const auto& newEdges = edgeTable[y - minY];
-        activeEdgeList.insert(activeEdgeList.end(), newEdges.begin(), newEdges.end());
-
-        // 2. Удаляем ребра, у которых yMax <= y
-        activeEdgeList.erase(
-            std::remove_if(activeEdgeList.begin(), activeEdgeList.end(),
-                           [y](const Edge& e) { return e.yMax <= y; }),
-            activeEdgeList.end()
-        );
-
-        // 3. Сортируем активные ребра по xCurrent
-        std::sort(activeEdgeList.begin(), activeEdgeList.end(),
-                  [](const Edge& a, const Edge& b) { return a.xCurrent < b.xCurrent; });
-
-        // 4. Закрашиваем пиксели парами (правило чет-нечет)
-        for (size_t i = 0; i + 1 < activeEdgeList.size(); i += 2) {
-            int xStart = static_cast<int>(std::ceil(activeEdgeList[i].xCurrent));
-            int xEnd = static_cast<int>(std::floor(activeEdgeList[i + 1].xCurrent));
-
-            for (int x = xStart; x <= xEnd; ++x) {
-                if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
-                    canvas.append(sf::Vertex{sf::Vector2f(static_cast<float>(x), static_cast<float>(y)), fillColor});
+void srednFiltr(sf::Image& image, sf::Image& tempImage, int kernelSize = 3) {
+    sf::Vector2u size = image.getSize();
+    int squareKernelSize = kernelSize * kernelSize;
+    for (unsigned int y = kernelSize / 2; y < size.y - kernelSize / 2; ++y) {
+        for (unsigned int x = kernelSize / 2; x < size.x - kernelSize / 2; ++x) {
+            unsigned int sumR = 0, sumG = 0, sumB = 0;
+            
+            for (int j = -kernelSize / 2; j <= kernelSize / 2; ++j) {
+                for (int i = -kernelSize / 2; i <= kernelSize / 2; ++i) {
+                    sf::Color pixelColor = tempImage.getPixel({x + i, y + j});
+                    sumR += pixelColor.r;
+                    sumG += pixelColor.g;
+                    sumB += pixelColor.b;
                 }
             }
-        }
-
-        // 5. Пересчитываем X для следующей строки
-        for (auto& e : activeEdgeList) {
-            e.xCurrent += e.invSlope;
+            sf::Color newColor(sumR / squareKernelSize, sumG / squareKernelSize, sumB / squareKernelSize);
+            image.setPixel({x, y}, newColor);
         }
     }
-
-    return edgeCount * sizeof(Edge);
 }
 
-std::tuple<sf::VertexArray, sf::VertexArray, sf::VertexArray> Test(
-    const std::vector<Point>& figure, const Point seedPoint, sf::VertexArray& boundary) 
-{
-    for (int i = 0; i < WIDTH; ++i) {
-        for (int j = 0; j < HEIGHT; ++j) {
-            gridMap[i][j] = 0;
-        }
-    }
+void GaussFiltr(sf::Image& image, sf::Image& tempImage, int kernelSize = 3, float sigma = 1.0f) {
+    sf::Vector2u size = image.getSize();
+    for (unsigned int y = kernelSize / 2; y < size.y - kernelSize / 2; ++y) {
+        for (unsigned int x = kernelSize / 2; x < size.x - kernelSize / 2; ++x) {
+            unsigned int sumR = 0, sumG = 0, sumB = 0;
+            
+            for (int j = -kernelSize / 2; j <= kernelSize / 2; ++j) {
+                for (int i = -kernelSize / 2; i <= kernelSize / 2; ++i) {
+                    int curX = x + i;
+                    int curY = y + j;
+                    sf::Color pixelColor = tempImage.getPixel({x + i, y + j});
 
-    boundary.clear();
-    for (size_t i = 0; i < figure.size(); ++i) {
-        Point p1 = figure[i];
-        Point p2 = figure[(i + 1) % figure.size()];
-        addLine(boundary, (int)std::round(p1.x), (int)std::round(p1.y),
-                          (int)std::round(p2.x), (int)std::round(p2.y), sf::Color::White);
-    }
-
-    // --- ТЕСТ 1: Пользовательский Flood Fill ---
-    sf::VertexArray floodResult(sf::PrimitiveType::Points);
-    
-    auto startFlood = std::chrono::high_resolution_clock::now();
-    size_t peakQueue = floodFill(floodResult, seedPoint, sf::Color(50, 205, 50));
-    auto endFlood = std::chrono::high_resolution_clock::now();
-    
-    std::chrono::duration<double, std::milli> floodDuration = endFlood - startFlood;
-
-    // --- ТЕСТ 2: Пользовательский Scanline Fill ---
-    sf::VertexArray scanlineResult(sf::PrimitiveType::Points);
-
-    auto startScan = std::chrono::high_resolution_clock::now();
-    scanlineFill(scanlineResult, figure, sf::Color(30, 144, 255));
-    auto endScan = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double, std::milli> scanDuration = endScan - startScan;
-
-    // --- ТЕСТ 3: OpenCV floodFill ---
-    // Создаем матрицу маски (0 - пусто, 255 - граница)
-    cv::Mat cvCanvas = cv::Mat::zeros(HEIGHT, WIDTH, CV_8UC1);
-    for (int x = 0; x < WIDTH; ++x) {
-        for (int y = 0; y < HEIGHT; ++y) {
-            if (gridMap[x][y] == 1) {
-                cvCanvas.at<uchar>(y, x) = 255;
+                    float weight = std::exp(-(i * i + j * j) / (2.0f * sigma * sigma)) / (M_PI * 2.0f * sigma * sigma);
+                    
+                    sumR += pixelColor.r * weight;
+                    sumG += pixelColor.g * weight;
+                    sumB += pixelColor.b * weight;
+                }
             }
+            sf::Color newColor(sumR, sumG, sumB);
+            image.setPixel({x, y}, newColor);
         }
     }
+}
 
-    auto startCV = std::chrono::high_resolution_clock::now();
-    cv::floodFill(cvCanvas, cv::Point((int)seedPoint.x, (int)seedPoint.y), cv::Scalar(128));
-    auto endCV = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> cvDuration = endCV - startCV;
+void SobelFiltr(sf::Image& image, sf::Image& tempImage) {
+    int kernelSize = 3;
+    sf::Vector2u size = image.getSize();
+    for (unsigned int y = kernelSize / 2; y < size.y - kernelSize / 2; ++y) {
+        for (unsigned int x = kernelSize / 2; x < size.x - kernelSize / 2; ++x) {
+            unsigned int sumRx = 0, sumGx = 0, sumBx = 0, sumRy = 0, sumGy = 0, sumBy = 0;
+            
+            int gx[3][3] = {
+                {-1, 0, 1},
+                {-2, 0, 2},
+                {-1, 0, 1}
+            };
+            int gy[3][3] = {
+                {-1, -2, -1},
+                {0, 0, 0},
+                {1, 2, 1}
+            };
 
-    // Формируем sf::VertexArray для отображения OpenCV заливки
-    sf::VertexArray cvFloodResult(sf::PrimitiveType::Points);
-    for (int y = 0; y < HEIGHT; ++y) {
-        for (int x = 0; x < WIDTH; ++x) {
-            if (cvCanvas.at<uchar>(y, x) == 128) {
-                cvFloodResult.append(sf::Vertex{{(float)x, (float)y}, sf::Color(255, 140, 0)});
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) {
+                    sf::Color pixelColor = tempImage.getPixel({x + i - 1, y + j - 1});
+
+                    sumRx += pixelColor.r * gx[i][j];
+                    sumGx += pixelColor.g * gx[i][j];
+                    sumBx += pixelColor.b * gx[i][j];
+
+                    sumRy += pixelColor.r * gy[i][j];
+                    sumGy += pixelColor.g * gy[i][j];
+                    sumBy += pixelColor.b * gy[i][j];
+                }
             }
+            sf::Color newColor(std::sqrt(sumRx * sumRx + sumRy * sumRy), 
+                               std::sqrt(sumGx * sumGx + sumGy * sumGy), 
+                               std::sqrt(sumBx * sumBx + sumBy * sumBy));
+            image.setPixel({x, y}, newColor);
         }
     }
+}
 
-    std::cout << "========== ИТЕРАЦИЯ (Ребер: " << figure.size() << ") ==========\n";
-    std::cout << "[1] Кастомный Flood Fill: " << floodDuration.count() << " мс\n";
-    std::cout << "[2] Кастомный Scanline:   " << scanDuration.count()  << " мс\n";
-    std::cout << "[3] OpenCV floodFill:     " << cvDuration.count()    << " мс (SIMD/Scanline span)\n";
-    std::cout << "=========================================================\n\n";
+void updateWindowSizeForImage(sf::RenderWindow& window, sf::Sprite& sprite, const sf::Vector2u& imgSize) {
+    const unsigned int MAX_WIDTH = 1440;
+    const unsigned int MAX_HEIGHT = 900;
 
-    return {floodResult, scanlineResult, cvFloodResult};
+    unsigned int targetW = imgSize.x;
+    unsigned int targetH = imgSize.y;
+
+    // Если картинка больше экрана, уменьшаем пропорционально
+    if (targetW > MAX_WIDTH || targetH > MAX_HEIGHT) {
+        float ratio = std::min(static_cast<float>(MAX_WIDTH) / targetW, 
+                               static_cast<float>(MAX_HEIGHT) / targetH);
+        targetW = static_cast<unsigned int>(targetW * ratio);
+        targetH = static_cast<unsigned int>(targetH * ratio);
+    }
+
+    // 1. Меняем размер физического окна
+    window.setSize({targetW, targetH});
+
+    // 2. Обновляем View (область видимости), чтобы не было искажений
+    window.setView(sf::View(sf::FloatRect({0.f, 0.f}, {static_cast<float>(targetW), static_cast<float>(targetH)})));
+
+    // 3. Подгоняем масштаб спрайта под целевой размер
+    sprite.setScale({
+        static_cast<float>(targetW) / imgSize.x,
+        static_cast<float>(targetH) / imgSize.y
+    });
+    sprite.setPosition({0.f, 0.f});
 }
 
 int main() {
-    const double S = 400.0;
-    const double cx = WIDTH / 2.0;
-    const double cy = HEIGHT / 2.0;
+    std::string currentPath = fs::current_path().parent_path().string().append("/images/");
 
-    std::vector<Point> figure = {
-        {cx - S / 2.0, cy - S / 2.0},
-        {cx + S / 2.0, cy - S / 2.0},
-        {cx + S / 2.0, cy + S / 2.0},
-        {cx - S / 2.0, cy + S / 2.0}
-    };
-    Point seedPoint = {cx, cy};
+    std::vector<fs::path> images;
+    for (const auto& entry : fs::directory_iterator(currentPath)) {
+        if (fs::is_regular_file(entry)) {
+            images.push_back(entry.path());
+        }
+    }
 
-    sf::VertexArray boundary(sf::PrimitiveType::Points);
+    if (images.empty()) {
+        std::cerr << "В папке images/ не найдено ни одного изображения!" << std::endl;
+        return -1;
+    }
 
-    sf::RenderWindow window(sf::VideoMode({WIDTH, HEIGHT}), L"Сравнение: Custom vs OpenCV");
-    int currentMode = 1;
+    // 1. Загрузка исходного изображения
+    int ImageIndex = 0;
+    sf::Image originalImage;
+    if (!originalImage.loadFromFile(images[ImageIndex])) {
+        std::cerr << "Ошибка загрузки первого изображения!" << std::endl;
+        return -1;
+    }
 
-    std::cout << "Управление:\n";
-    std::cout << "  [1] Кастомный Flood Fill (зеленый)\n";
-    std::cout << "  [2] Кастомный Scanline (синий)\n";
-    std::cout << "  [3] OpenCV floodFill (оранжевый)\n";
-    std::cout << "  [->] Следующая итерация фрактала\n\n";
+    // Рабочая копия изображения для применения фильтров
+    sf::Image processedImage = originalImage;
 
-    auto [floodResult, scanlineResult, cvFloodResult] = Test(figure, seedPoint, boundary);
+    // 2. Создание окна под размер картинки
+    sf::RenderWindow window(sf::VideoMode(originalImage.getSize()), "SFML Filter Sandbox");
+    window.setFramerateLimit(60);
 
+    // 3. Текстура и спрайт для отрисовки
+    sf::Texture texture;
+    (void)texture.loadFromImage(processedImage);
+    sf::Sprite sprite(texture);
+
+    // 4. Главный цикл
     while (window.isOpen()) {
         while (const auto event = window.pollEvent()) {
             if (event->is<sf::Event::Closed>()) {
@@ -310,36 +165,63 @@ int main() {
             }
             if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>()) {
                 if (keyPressed->code == sf::Keyboard::Key::Num1) {
-                    currentMode = 1;
+                    processedImage = originalImage;
+                    srednFiltr(processedImage, originalImage);
+                    (void)texture.loadFromImage(processedImage);
                 } else if (keyPressed->code == sf::Keyboard::Key::Num2) {
-                    currentMode = 2;
+                    processedImage = originalImage;
+                    srednFiltr(processedImage, originalImage, 5);
+                    (void)texture.loadFromImage(processedImage);
                 } else if (keyPressed->code == sf::Keyboard::Key::Num3) {
-                    currentMode = 3;
-                } else if (keyPressed->code == sf::Keyboard::Key::Right) {
-                    squareKochIsland(figure);
-                    auto results = Test(figure, seedPoint, boundary);
-                    floodResult   = std::move(std::get<0>(results));
-                    scanlineResult = std::move(std::get<1>(results));
-                    cvFloodResult  = std::move(std::get<2>(results));
+                    processedImage = originalImage;
+                    GaussFiltr(processedImage, originalImage, 3, 0.5f);
+                    (void)texture.loadFromImage(processedImage);
+                } else if (keyPressed->code == sf::Keyboard::Key::Num4) {
+                    processedImage = originalImage;
+                    SobelFiltr(processedImage, originalImage);
+                    (void)texture.loadFromImage(processedImage);
+                } else if (keyPressed->code == sf::Keyboard::Key::R) {
+                    // Сброс к оригиналу
+                    processedImage = originalImage;
+                    (void)texture.loadFromImage(processedImage);
+                } else if (keyPressed->code == sf::Keyboard::Key::S) {
+                    // Сохранение результата
+                    if (processedImage.saveToFile("output.png")) {
+                        std::cout << "Сохранено в output.png" << std::endl;
+                    } else {
+                        std::cerr << "Не удалось сохранить файл output.png" << std::endl;
+                    }
                 } else if (keyPressed->code == sf::Keyboard::Key::Escape) {
                     window.close();
+                } else if (keyPressed->code == sf::Keyboard::Key::Left) {
+                    // Переключение на предыдущее изображение
+                    ImageIndex = (ImageIndex + images.size() - 1) % images.size();
+                    if (originalImage.loadFromFile(images[ImageIndex])) {
+                        processedImage = originalImage;
+                        (void)texture.loadFromImage(processedImage);
+                        sprite.setTexture(texture, true); 
+                        updateWindowSizeForImage(window, sprite, originalImage.getSize());
+                    }
+                } else if (keyPressed->code == sf::Keyboard::Key::Right) {
+                    // Переключение на следующее изображение
+                    ImageIndex = (ImageIndex + 1) % images.size();
+                    if (originalImage.loadFromFile(images[ImageIndex])) {
+                        processedImage = originalImage;
+                        (void)texture.loadFromImage(processedImage);
+                        sprite.setTexture(texture, true); 
+                        updateWindowSizeForImage(window, sprite, originalImage.getSize());
+                    }
                 }
             }
         }
-
-        window.clear(sf::Color::Black);
-        window.draw(boundary);
-
-        if (currentMode == 1) {
-            window.draw(floodResult);
-        } else if (currentMode == 2) {
-            window.draw(scanlineResult);
-        } else if (currentMode == 3) {
-            window.draw(cvFloodResult);
-        }
-
+        
+        window.clear();
+        window.draw(sprite);
         window.display();
     }
 
     return 0;
 }
+/*
+Библиотека с реализацией фильтров (средний, гауссовский, собеля) и демонстрацией их работы на изображении.
+*/
